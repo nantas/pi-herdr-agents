@@ -86,7 +86,7 @@ export interface HcDelegationDeps {
   io?: FsIo;
   homeDir?: string;
   now?: () => number;
-  /** Wait between reset-verification polls. Injectable so tests do not sleep. */
+  /** Wait between verification attempts. Injectable so tests do not sleep. */
   sleep?: (ms: number) => Promise<void>;
   /** How long a `/new` may take to show up as a new session file. */
   resetWindowMs?: number;
@@ -416,20 +416,26 @@ export function createHcDelegationExtension(deps: HcDelegationDeps = {}) {
       const fromLabel = nonEmpty(info?.labels?.['herdr.tab']);
       const spaceId = 'spaceId' in role ? role.spaceId : null;
 
-      let listJson: string | null = null;
       if (spaceId) {
-        const listed = await run('herdr-app', ['ls']);
-        if (listed.code === 0) listJson = listed.stdout;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          if (attempt > 0) await sleep(100);
+          const listed = await run('herdr-app', ['ls']);
+          if (
+            listed.code !== 0 ||
+            !Array.isArray(parseJson<{ spaces?: unknown }>(listed.stdout)?.spaces)
+          ) {
+            break;
+          }
+          if (fromLabel) {
+            const tabName = findTabName(listed.stdout, fromLabel);
+            if (tabName !== null) return { tabId: fromLabel, tabName };
+          } else {
+            const tab = resolveTabFromAppList(listed.stdout, spaceId, address);
+            if (tab) return tab;
+          }
+        }
       }
-
-      if (fromLabel) {
-        return {
-          tabId: fromLabel,
-          tabName: listJson ? findTabName(listJson, fromLabel) : null,
-        };
-      }
-      if (!spaceId || !listJson) return null;
-      return resolveTabFromAppList(listJson, spaceId, address);
+      return fromLabel ? { tabId: fromLabel, tabName: null } : null;
     }
 
     /** Machine-readable form of the four headings, for tool details. */
@@ -728,23 +734,38 @@ export function createHcDelegationExtension(deps: HcDelegationDeps = {}) {
       address: string,
       task: string,
     ): Promise<SpawnLaunchResult['firstMessage']> {
-      await run('hc', ['wait', '--timeout', '30', '--', address]);
-      const current = await terminalInfo(address);
-      if (current?.status?.state !== 'idle' || current.status.app !== 'pi') {
-        return {
-          sent: false,
-          reason:
-            'Pi did not reach idle. Inspect the existing terminal with hc_worker({ action: "read" }) before sending the task.',
-        };
+      let timeout = 30;
+      const deadline = now() + timeout * 1000;
+      for (let attempt = 0; attempt < 8 && timeout > 0; attempt += 1) {
+        const waited = await run('hc', ['wait', '--timeout', String(timeout), '--', address]);
+        const waitInfo = parseJson<{ ended?: boolean; reason?: string; status?: string }>(
+          waited.stdout,
+        );
+        const current = await terminalInfo(address);
+        if (current?.state && current.state !== 'live') break;
+        if (current?.status?.state === 'idle' && current.status.app === 'pi') {
+          const sent = await run('hc', ['send', address, task]);
+          if (sent.code !== 0 || isUndeliveredReport(sent)) {
+            return {
+              sent: false,
+              reason: sent.code !== 0 ? `hc send exit ${sent.code}` : 'the terminal is busy',
+            };
+          }
+          return { sent: true };
+        }
+
+        // A message to the parent can end `hc wait` while the child is still starting.
+        const interrupted =
+          waitInfo?.reason === 'message' || (waitInfo?.ended === false && !waitInfo.reason);
+        const statusPending = waitInfo?.reason === 'status' && current?.status == null;
+        if (!interrupted && !statusPending) break;
+        timeout = Math.floor((deadline - now()) / 1000);
       }
-      const sent = await run('hc', ['send', address, task]);
-      if (sent.code !== 0 || isUndeliveredReport(sent)) {
-        return {
-          sent: false,
-          reason: sent.code !== 0 ? `hc send exit ${sent.code}` : 'the terminal is busy',
-        };
-      }
-      return { sent: true };
+      return {
+        sent: false,
+        reason:
+          'Pi did not reach idle. Inspect the existing terminal with hc_worker({ action: "read" }) before sending the task.',
+      };
     }
 
     async function profileNamesFor(cwd: string) {

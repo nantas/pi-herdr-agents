@@ -675,6 +675,72 @@ describe('hc_worker spawn', () => {
     },
   );
 
+  test('a queued parent message interrupts the wait before Pi is idle', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'hc-profile-wait-'));
+    try {
+      const agents = join(cwd, '.pi', 'agents');
+      await mkdir(agents, { recursive: true });
+      await writeFile(join(agents, 'grunt.md'), '---\nname: grunt\n---\nWork.\n');
+      let waits = 0;
+      const h = harness({
+        env: { HC_TERMINAL_ID: 't18', PATH: '/bin', PI_HERDR_USE_PROFILE_LAUNCH: '1' },
+        cwd,
+        now: () => (waits === 0 ? 1000 : 2200),
+        exec: leadExec(async (command, args) => {
+          if (command === 'which') return ok(`${PI}\n`);
+          if (command === 'hc' && args[0] === 'run') return ok({ address: 't50' });
+          if (command === 'hc' && args[0] === 'wait') {
+            waits += 1;
+            if (waits === 1) {
+              return ok({
+                children: [],
+                ended: false,
+                exit_code: null,
+                from: 't6b',
+                reason: 'message',
+                status: null,
+                terminal: 't2',
+                turn: 0,
+              });
+            }
+            return ok({ reason: 'status' });
+          }
+          if (command === 'hc' && args[0] === 'get' && args[1] === 't50') {
+            return ok({
+              address: 't50',
+              state: 'live',
+              status: waits === 1 ? null : { app: 'pi', state: 'idle' },
+              labels: { 'herdr.tab': TAB },
+            });
+          }
+          if (command === 'herdr-app' && args[0] === 'ls') return ok(appList('hc-work', ['t50']));
+          return undefined;
+        }),
+      });
+      const result = await h.callTool('hc_worker', {
+        action: 'spawn',
+        name: 'w1',
+        template: 'grunt',
+        task: 'implement X',
+      });
+
+      expect(result.details.firstMessageSent).toBe(true);
+      const deliveryCalls = h.execCalls
+        .filter(({ command, args }) => command === 'hc' && args.includes('t50'))
+        .map(({ args }) => args);
+      expect(deliveryCalls).toEqual([
+        ['wait', '--timeout', '30', '--', 't50'],
+        ['get', 't50', '--json'],
+        ['wait', '--timeout', '28', '--', 't50'],
+        ['get', 't50', '--json'],
+        ['send', 't50', 'implement X'],
+        ['get', 't50', '--json'],
+      ]);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   test('a disallowed model is rejected before spawning a profile', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'hc-profile-model-'));
     try {
@@ -760,6 +826,36 @@ describe('hc_worker spawn', () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('already exists');
     expect(h.execCalls.some((call) => call.args[0] === 'run')).toBe(false);
+  });
+
+  test('a tab that appears after the first listing is resolved', async () => {
+    let listings = 0;
+    const h = harness({
+      env: { HC_TERMINAL_ID: 't18' },
+      exec: leadExec(async (command, args) => {
+        if (command === 'hc' && args[0] === 'run') {
+          return ok({ address: 't50', first_message: { sent: true } });
+        }
+        if (command === 'hc' && args[0] === 'get' && args[1] === 't50') {
+          return ok({ address: 't50', labels: { 'herdr.space': SPACE } });
+        }
+        if (command === 'herdr-app' && args[0] === 'ls') {
+          listings += 1;
+          return ok(appList('1', listings === 1 ? ['t18'] : ['t18', 't50']));
+        }
+        return undefined;
+      }),
+    });
+    const result = await h.callTool('hc_worker', {
+      action: 'spawn',
+      name: 'w1',
+      template: 'grunt',
+      task: 'x',
+    });
+
+    expect(listings).toBe(2);
+    expect(result.details).toMatchObject({ tabId: TAB, warnings: [] });
+    expect(h.lastEntry().data.tabName).toBe('w1');
   });
 
   test('a tab the person already named is never renamed', async () => {
