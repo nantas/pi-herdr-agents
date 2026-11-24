@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
-export const agentLabel = 'pi-herdr-agents=agent';
+export const agentLabelKey = 'pi-herdr-agents';
+export const agentLabel = `${agentLabelKey}=agent`;
 
 interface ListedTerminal {
   address: string;
@@ -40,11 +41,11 @@ export function summarizeTerminal(terminal: Terminal): ListedTerminal {
 }
 
 class HcError extends Error {
-  constructor(
-    readonly code: number,
-    message: string,
-  ) {
+  readonly code: number;
+
+  constructor(code: number, message: string) {
     super(message);
+    this.code = code;
   }
 }
 
@@ -57,10 +58,13 @@ function canReceive(terminal: Terminal) {
 }
 
 export class HcClient {
-  constructor(
-    private readonly exec: ExtensionAPI['exec'],
-    private readonly signal?: AbortSignal,
-  ) {}
+  private readonly exec: ExtensionAPI['exec'];
+  private readonly signal?: AbortSignal;
+
+  constructor(exec: ExtensionAPI['exec'], signal?: AbortSignal) {
+    this.exec = exec;
+    this.signal = signal;
+  }
 
   async command<T = unknown>(command: string, args: string[], timeout = 15_000): Promise<T> {
     this.signal?.throwIfAborted();

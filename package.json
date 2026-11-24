@@ -3,6 +3,9 @@
   "version": "0.2.0",
   "description": "Launch, message, and manage interactive Pi subagents in Herdr Core.",
   "type": "module",
+  "exports": {
+    "./*": "./*"
+  },
   "keywords": [
     "pi-package",
     "pi",
