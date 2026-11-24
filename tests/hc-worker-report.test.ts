@@ -741,6 +741,59 @@ describe('hc_worker spawn', () => {
     }
   });
 
+  test('multiple queued parent messages do not exhaust status attempts', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'hc-profile-wait-'));
+    try {
+      const agents = join(cwd, '.pi', 'agents');
+      await mkdir(agents, { recursive: true });
+      await writeFile(join(agents, 'grunt.md'), '---\nname: grunt\n---\nWork.\n');
+      let waits = 0;
+      const h = harness({
+        env: { HC_TERMINAL_ID: 't18', PATH: '/bin', PI_HERDR_USE_PROFILE_LAUNCH: '1' },
+        cwd,
+        now: () => 1000,
+        exec: leadExec(async (command, args) => {
+          if (command === 'which') return ok(`${PI}\n`);
+          if (command === 'hc' && args[0] === 'run') return ok({ address: 't50' });
+          if (command === 'hc' && args[0] === 'wait') {
+            waits += 1;
+            return ok({ reason: waits <= 10 ? 'message' : 'status' });
+          }
+          if (command === 'hc' && args[0] === 'get' && args[1] === 't50') {
+            return ok({
+              address: 't50',
+              state: 'live',
+              status: waits <= 10 ? null : { app: 'pi', state: 'idle' },
+              labels: { 'herdr.tab': TAB },
+            });
+          }
+          if (command === 'herdr-app' && args[0] === 'ls') return ok(appList('hc-work', ['t50']));
+          return undefined;
+        }),
+      });
+      const result = await h.callTool('hc_worker', {
+        action: 'spawn',
+        name: 'w1',
+        template: 'grunt',
+        task: 'implement X',
+      });
+
+      expect(waits).toBe(11);
+      expect(result.details.firstMessageSent).toBe(true);
+      expect(
+        h.execCalls.some(
+          ({ command, args }) =>
+            command === 'hc' &&
+            args[0] === 'send' &&
+            args[1] === 't50' &&
+            args[2] === 'implement X',
+        ),
+      ).toBe(true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   test('a disallowed model is rejected before spawning a profile', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'hc-profile-model-'));
     try {

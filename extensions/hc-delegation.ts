@@ -736,7 +736,15 @@ export function createHcDelegationExtension(deps: HcDelegationDeps = {}) {
     ): Promise<SpawnLaunchResult['firstMessage']> {
       let timeout = 30;
       const deadline = now() + timeout * 1000;
-      for (let attempt = 0; attempt < 8 && timeout > 0; attempt += 1) {
+      let messageInterrupts = 0;
+      let statusAttempts = 0;
+      const maxMessageDrains = 64;
+      const maxStatusAttempts = 8;
+      while (
+        messageInterrupts < maxMessageDrains &&
+        statusAttempts < maxStatusAttempts &&
+        timeout > 0
+      ) {
         const waited = await run('hc', ['wait', '--timeout', String(timeout), '--', address]);
         const waitInfo = parseJson<{ ended?: boolean; reason?: string; status?: string }>(
           waited.stdout,
@@ -758,7 +766,9 @@ export function createHcDelegationExtension(deps: HcDelegationDeps = {}) {
         const interrupted =
           waitInfo?.reason === 'message' || (waitInfo?.ended === false && !waitInfo.reason);
         const statusPending = waitInfo?.reason === 'status' && current?.status == null;
-        if (!interrupted && !statusPending) break;
+        if (interrupted) messageInterrupts += 1;
+        else if (statusPending) statusAttempts += 1;
+        else break;
         timeout = Math.floor((deadline - now()) / 1000);
       }
       return {
