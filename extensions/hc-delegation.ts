@@ -57,6 +57,7 @@ import {
   STATE_CUSTOM_TYPE,
   SUBAGENT_SNIPPET,
   WORKER_SUBAGENT_SNIPPET,
+  workerSessionDirFor,
   type CommandResult,
   type CommandRunner,
   type DelegationSessionState,
@@ -75,6 +76,7 @@ import {
   resolveSpawnMode,
   resolveTabFromAppList,
   shouldRenameTab,
+  WORKER_SESSION_LABEL,
   type HerdrTab,
   type SpawnLabel,
   type SpawnMode,
@@ -522,9 +524,16 @@ export function createHcDelegationExtension(deps: HcDelegationDeps = {}) {
 
       // Facts captured before the `/new`: what the previous unit looked like.
       const cwd = nonEmpty(before.cwd);
-      const dir = cwd === null ? null : sessionDirFor(homeDir, cwd);
-      const dirReadable = dir !== null && io.exists(dir);
-      const listingBefore = dirReadable ? io.listDir(dir!) : [];
+      // The launch label records the directory Pi keeps using across `/new`.
+      const workerDir = before.labels?.[WORKER_SESSION_LABEL] === 'worker' && !!homeDir;
+      const dir =
+        cwd === null
+          ? null
+          : workerDir
+            ? workerSessionDirFor(homeDir, cwd)
+            : sessionDirFor(homeDir, cwd);
+      const dirExists = dir !== null && io.exists(dir);
+      const listingBefore = dirExists ? io.listDir(dir) : [];
       const sessionBefore = lastSessionFile(listingBefore);
       const previousTask = nonEmpty(owned?.task);
       // The bound report path of a still-pending acceptance belongs to the same
@@ -658,12 +667,14 @@ export function createHcDelegationExtension(deps: HcDelegationDeps = {}) {
         resetConfidence: 'screen-only',
         warning: null,
       };
-      if (sent && dirReadable) {
+      if (sent && dir !== null && (dirExists || workerDir)) {
         const attempts = Math.max(1, Math.ceil(resetWindowMs / Math.max(1, resetPollMs)));
-        let newFiles: string[] = [];
+        let newFiles: string[] | null = null;
         for (let attempt = 0; attempt < attempts; attempt += 1) {
-          newFiles = newSessionFiles(listingBefore, io.listDir(dir!), resetSentAt);
-          if (newFiles.length > 0) break;
+          if (io.exists(dir)) {
+            newFiles = newSessionFiles(listingBefore, io.listDir(dir), resetSentAt);
+            if (newFiles.length > 0) break;
+          }
           if (attempt < attempts - 1) await sleep(resetPollMs);
         }
         corroboration = corroborateReset(newFiles, resetWindowMs);
@@ -906,6 +917,9 @@ export function createHcDelegationExtension(deps: HcDelegationDeps = {}) {
             { name, template },
           );
         }
+        const profileSessionDir = homeDir
+          ? workerSessionDirFor(homeDir, cwd ?? ctx.cwd)
+          : undefined;
         const args = buildProfileSpawnArgs({
           name,
           cwd,
@@ -914,6 +928,7 @@ export function createHcDelegationExtension(deps: HcDelegationDeps = {}) {
           parent: role.terminalId,
           command,
           extensionPath,
+          sessionDir: profileSessionDir,
           childArgs: await childPiArgs(profile, undefined, selectedModel),
         });
         const spawned = await run('hc', args);

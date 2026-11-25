@@ -17,6 +17,8 @@
 import { agentLabel, agentLabelKey } from './hc-client.ts';
 import { parseJson, nonEmpty } from './hc-role.ts';
 
+export const WORKER_SESSION_LABEL = 'pi-herdr-agents.session-dir';
+
 export interface SpawnArgsInput {
   name: string;
   template: string;
@@ -59,6 +61,7 @@ export interface ProfileSpawnArgsInput {
   /** Resolved Pi executable, already wrapped for the server PATH when needed. */
   command: string[];
   extensionPath: string;
+  sessionDir?: string;
   /** `--hc-agent-profile <json>` plus the profile's Pi flags. */
   childArgs: string[];
 }
@@ -69,9 +72,11 @@ export function buildProfileSpawnArgs(input: ProfileSpawnArgsInput): string[] {
   if (input.spaceId) args.push('--label', `herdr.space=${input.spaceId}`);
   if (input.tabId) args.push('--label', `herdr.tab=${input.tabId}`);
   args.push('--label', agentLabel);
+  if (input.sessionDir) args.push('--label', `${WORKER_SESSION_LABEL}=worker`);
   if (input.cwd) args.push('--cwd', input.cwd);
   args.push('--parent', input.parent, '--', ...input.command);
   args.push('-e', input.extensionPath, ...input.childArgs);
+  if (input.sessionDir) args.push('--session-dir', input.sessionDir);
   return args;
 }
 

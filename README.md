@@ -56,7 +56,9 @@ The extension resolves the running Pi process into one role at session start and
 
 `hc_worker spawn` accepts either an `hc` template or an agent profile. A name that `hc templates --json` does not own launches through `--hc-agent-profile`, so `.pi/agents/{grunt,workhorse,peer}.md` works even when the Herdr Core templates are absent; set `PI_HERDR_USE_PROFILE_LAUNCH=1` to prefer the profile even when both exist.
 
-`hc_worker reuse` resets an owned worker's Pi session in place. It is fail-closed: before the next task is delivered the pane must show Pi's fresh-session signature, and after delivery a new session file under `~/.pi/agent/sessions/<cwd-slug>/` must corroborate the reset. Ownership and tab state are persisted as an `hc-delegation-state` custom entry.
+Profile-launched workers store sessions under `~/.pi/agent/sessions/_hc-workers/<cwd-slug>/` and carry the `pi-herdr-agents.session-dir=worker` label so reuse can find that directory. Template-launched workers use their normal Pi session directory.
+
+`hc_worker reuse` resets an owned worker's Pi session in place. It is fail-closed: before the next task is delivered the pane must show Pi's fresh-session signature; after delivery, a new session file in the worker's session directory corroborates the reset when available. Ownership and tab state are persisted as an `hc-delegation-state` custom entry.
 
 ## Agent definitions
 

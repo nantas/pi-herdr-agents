@@ -298,6 +298,12 @@ export function sessionDirFor(homeDir: string, cwd: string): string {
   return join(homeDir, '.pi', 'agent', 'sessions', sessionSlug(cwd));
 }
 
+/** Pi session directory for profile-launched workers, optionally scoped to a cwd. */
+export function workerSessionDirFor(homeDir: string, cwd?: string | null): string {
+  const root = join(homeDir, '.pi', 'agent', 'sessions', '_hc-workers');
+  return cwd ? join(root, sessionSlug(cwd)) : root;
+}
+
 /**
  * Creation time of a Pi session file (`<iso>_<uuid>.jsonl`), or `null` when the
  * name does not carry a parseable stamp.
@@ -466,13 +472,13 @@ export function corroborateReset(
     return {
       sessionAfter: null,
       resetConfidence: 'screen-only',
-      warning: `no new Pi session file appeared for the worker's cwd within ${windowMs} ms of delivery, so the reset is confirmed by the pane's fresh-session signature only.`,
+      warning: `no new Pi session file appeared in the worker's session directory within ${windowMs} ms of delivery, so the reset is confirmed by the pane's fresh-session signature only.`,
     };
   }
   return {
     sessionAfter: null,
     resetConfidence: 'screen-only',
-    warning: `${newSessions.length} new Pi session files appeared for the worker's cwd, so none can be attributed to this pane; the reset is confirmed by the pane's fresh-session signature only.`,
+    warning: `${newSessions.length} new Pi session files appeared in the worker's session directory, so none can be attributed to this pane; the reset is confirmed by the pane's fresh-session signature only.`,
   };
 }
 

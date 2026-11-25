@@ -13,6 +13,7 @@ import {
   screenShowsFreshSession,
   screenShowsPreviousUnit,
   sessionDirFor,
+  workerSessionDirFor,
   type CommandResult,
   type FsIo,
 } from '../extensions/hc-role.ts';
@@ -490,7 +491,7 @@ describe('spawn argv', () => {
     ]);
   });
 
-  test('a profile launch runs Pi with the extension and the profile flag', () => {
+  test('a profile launch runs Pi with the extension, profile flag and worker session directory', () => {
     expect(
       buildProfileSpawnArgs({
         name: 'w1',
@@ -499,6 +500,7 @@ describe('spawn argv', () => {
         parent: 't18',
         command: ['/usr/bin/env', 'PATH=/bin', PI],
         extensionPath: EXTENSION,
+        sessionDir: workerSessionDirFor(`${HOME}/`),
         childArgs: ['--hc-agent-profile', '{"depth":1}'],
       }),
     ).toEqual([
@@ -511,6 +513,8 @@ describe('spawn argv', () => {
       `herdr.space=${SPACE}`,
       '--label',
       'pi-herdr-agents=agent',
+      '--label',
+      'pi-herdr-agents.session-dir=worker',
       '--parent',
       't18',
       '--',
@@ -521,6 +525,8 @@ describe('spawn argv', () => {
       EXTENSION,
       '--hc-agent-profile',
       '{"depth":1}',
+      '--session-dir',
+      '/home/tester/.pi/agent/sessions/_hc-workers',
     ]);
   });
 
@@ -602,11 +608,12 @@ describe('hc_worker spawn', () => {
   });
 
   test.each([
-    { model: undefined, expectedModel: 'test/default' },
-    { model: 'test/override', expectedModel: 'test/override' },
+    { model: undefined, expectedModel: 'test/default', homeDir: HOME },
+    { model: 'test/override', expectedModel: 'test/override', homeDir: HOME },
+    { model: undefined, expectedModel: 'test/default', homeDir: '' },
   ])(
-    'a profile launch selects $expectedModel and passes --hc-agent-profile',
-    async ({ model, expectedModel }) => {
+    'a profile launch selects $expectedModel and uses the session directory when home is "$homeDir"',
+    async ({ model, expectedModel, homeDir }) => {
       const cwd = await mkdtemp(join(tmpdir(), 'hc-profile-spawn-'));
       try {
         const agents = join(cwd, '.pi', 'agents');
@@ -619,6 +626,7 @@ describe('hc_worker spawn', () => {
         const h = harness({
           env: { HC_TERMINAL_ID: 't18', PATH: '/bin' },
           cwd,
+          deps: { homeDir },
           exec: leadExec(async (command, args) => {
             if (command === 'hc' && args[0] === 'templates') {
               return ok({ templates: [{ name: 'workhorse', description: '', command: 'pi' }] });
@@ -659,6 +667,16 @@ describe('hc_worker spawn', () => {
         expect(runCall.args[runCall.args.indexOf('--parent') + 1]).toBe('t18');
         expect(runCall.args).toContain('--model');
         expect(runCall.args[runCall.args.indexOf('--model') + 1]).toBe(expectedModel);
+        if (homeDir) {
+          expect(runCall.args).toContain('pi-herdr-agents.session-dir=worker');
+          expect(runCall.args.slice(-2)).toEqual([
+            '--session-dir',
+            workerSessionDirFor(homeDir, cwd),
+          ]);
+        } else {
+          expect(runCall.args).not.toContain('pi-herdr-agents.session-dir=worker');
+          expect(runCall.args).not.toContain('--session-dir');
+        }
 
         const waitCall = h.execCalls.find(
           (call) => call.command === 'hc' && call.args[0] === 'wait',
@@ -1055,11 +1073,18 @@ function ownedState() {
 }
 
 const SESSION_DIR = sessionDirFor(HOME, WORKSPACE);
+const WORKER_SESSION_DIR = workerSessionDirFor(HOME, WORKSPACE);
+const FOREIGN_WORKER_SESSION_DIR = workerSessionDirFor(HOME, '/other-project');
 const OLD_SESSION = '2023-12-31T00-00-00-000Z_old.jsonl';
 const NEW_SESSION = '2024-01-01T00-00-01-000Z_new.jsonl';
+const FOREIGN_OLD_SESSION = '2023-12-31T00-00-01-000Z_other.jsonl';
+const FOREIGN_NEW_SESSION = '2024-01-01T00-00-01-001Z_other.jsonl';
+const sessionHeader = (cwd: string) => `${JSON.stringify({ type: 'session', cwd })}\n`;
 
 interface ReuseOptions {
   terminal?: Record<string, unknown>;
+  profile?: boolean;
+  workerDirectoryMissing?: boolean;
   screen?: string;
   files?: Record<string, string>;
   exec?: ExecFn;
@@ -1068,17 +1093,29 @@ interface ReuseOptions {
 
 function reuseHarness(options: ReuseOptions = {}) {
   const files: Record<string, string> = {
-    [`${SESSION_DIR}/${OLD_SESSION}`]: '',
+    [`${SESSION_DIR}/${OLD_SESSION}`]: sessionHeader(WORKSPACE),
     ...(options.files ?? {}),
   };
-  const io = fakeIo(files, [SESSION_DIR]);
+  const dirs = [SESSION_DIR, FOREIGN_WORKER_SESSION_DIR];
+  if (!options.workerDirectoryMissing) {
+    dirs.push(WORKER_SESSION_DIR);
+    files[`${FOREIGN_WORKER_SESSION_DIR}/${FOREIGN_OLD_SESSION}`] = sessionHeader('/other-project');
+    if (options.profile) {
+      files[`${WORKER_SESSION_DIR}/${OLD_SESSION}`] = sessionHeader(WORKSPACE);
+    }
+  }
+  const io = fakeIo(files, dirs);
   const terminal = {
     address: 't50',
     parent: 't18',
     template: 'grunt',
     state: 'live',
     cwd: WORKSPACE,
-    labels: { 'herdr.space': SPACE, 'herdr.tab': TAB },
+    labels: {
+      'herdr.space': SPACE,
+      'herdr.tab': TAB,
+      ...(options.profile ? { 'pi-herdr-agents.session-dir': 'worker' } : {}),
+    },
     status: { app: 'pi', state: 'idle' },
     ...(options.terminal ?? {}),
   };
@@ -1099,7 +1136,14 @@ function reuseHarness(options: ReuseOptions = {}) {
       }
       if (command === 'hc' && args[0] === 'send') {
         // Pi persists the new session lazily, on that session's first message.
-        files[`${SESSION_DIR}/${NEW_SESSION}`] = '';
+        if (options.profile) {
+          if (options.workerDirectoryMissing) dirs.push(WORKER_SESSION_DIR);
+          files[`${WORKER_SESSION_DIR}/${NEW_SESSION}`] = sessionHeader(WORKSPACE);
+          files[`${FOREIGN_WORKER_SESSION_DIR}/${FOREIGN_NEW_SESSION}`] =
+            sessionHeader('/other-project');
+        } else {
+          files[`${SESSION_DIR}/${NEW_SESSION}`] = sessionHeader(WORKSPACE);
+        }
         return ok({ started: true, turn: 0 });
       }
       return undefined;
@@ -1129,6 +1173,28 @@ describe('hc_worker reuse', () => {
     });
     expect(h.lastEntry().data.ownedWorkers.w1.task).toBe('unit two');
   });
+
+  test.each([false, true])(
+    'corroborates a profile worker in its project directory (missing before delivery: %s)',
+    async (workerDirectoryMissing) => {
+      const h = reuseHarness({ profile: true, workerDirectoryMissing });
+      await h.fire('session_start', { reason: 'startup' });
+      const result = await h.callTool('hc_worker', {
+        action: 'reuse',
+        name: 'w1',
+        task: 'unit two',
+      });
+      expect(result.isError).toBeUndefined();
+      expect(result.details).toMatchObject({
+        status: 'reused',
+        firstMessageSent: true,
+        resetConfidence: 'session-file',
+        sessionBefore: workerDirectoryMissing ? null : OLD_SESSION,
+        sessionAfter: NEW_SESSION,
+        warnings: [],
+      });
+    },
+  );
 
   test('refuses a working worker without pressing /new', async () => {
     const h = reuseHarness({ terminal: { status: { app: 'pi', state: 'working' } } });
